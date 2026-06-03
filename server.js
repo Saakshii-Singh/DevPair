@@ -137,6 +137,10 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('feedback-submitted', { scorecard });
   });
 
+  socket.on('session-ended', ({ roomId }) => {
+    socket.to(roomId).emit('session-ended');
+  });
+
   // 3. WebRTC Direct Signal Relay
   socket.on('signal', ({ roomId, signalData }) => {
     // Relay signaling data (Offer, Answer, ICE candidates) to other peer in room

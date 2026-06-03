@@ -3,7 +3,8 @@ import QuestionPanel from './QuestionPanel';
 import CodeEditorPanel from './CodeEditorPanel';
 import VideoPanel from './VideoPanel';
 import ChatPanel from './ChatPanel';
-import { LogOut, Users } from 'lucide-react';
+import ScorecardModal from './ScorecardModal';
+import { LogOut, Clock, ShieldAlert } from 'lucide-react';
 
 function InterviewRoom({ socket, roomData, onLeave, username }) {
   const [question, setQuestion] = useState(roomData.question);
@@ -15,6 +16,48 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
   const [isRunning, setIsRunning] = useState(false);
   const [runResults, setRunResults] = useState(null);
 
+  // Custom Input States
+  const [customInput, setCustomInput] = useState('');
+  const [useCustomInput, setUseCustomInput] = useState(false);
+
+  // Timer States
+  const [timer, setTimer] = useState(2700); // 45 minutes in seconds
+
+  // Scorecard States
+  const [showScorecard, setShowScorecard] = useState(false);
+  const [scorecardData, setScorecardData] = useState(null);
+
+  // Initialize custom input when question changes
+  useEffect(() => {
+    if (question && question.testCases && question.testCases[0]) {
+      setCustomInput(question.testCases[0].inputStr || JSON.stringify(question.testCases[0].input));
+    }
+  }, [question]);
+
+  // Countdown timer interval
+  useEffect(() => {
+    // Stop timer if scorecard is shown
+    if (showScorecard) return;
+
+    const interval = setInterval(() => {
+      setTimer((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          // If timer runs out, automatically show evaluation scorecard
+          setShowScorecard(true);
+          if (socket && roomData.role === 'Interviewer') {
+            socket.emit('session-ended', { roomId: roomData.roomId });
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [showScorecard, socket, roomData.roomId, roomData.role]);
+
+  // Socket event listeners
   useEffect(() => {
     if (!socket) return;
 
@@ -25,8 +68,27 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
       setRunResults(null); // Clear previous runs
     });
 
+    // Listen for timer extension sync
+    socket.on('add-time', ({ minutes }) => {
+      setTimer((prev) => prev + minutes * 60);
+    });
+
+    // Listen for interviewer ending the session
+    socket.on('session-ended', () => {
+      setShowScorecard(true);
+    });
+
+    // Listen for submitted evaluation report
+    socket.on('feedback-submitted', ({ scorecard }) => {
+      setScorecardData(scorecard);
+      setShowScorecard(true);
+    });
+
     return () => {
       socket.off('question-change');
+      socket.off('add-time');
+      socket.off('session-ended');
+      socket.off('feedback-submitted');
     };
   }, [socket]);
 
@@ -39,11 +101,37 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
     }
   };
 
+  const handleAddTime = (minutes) => {
+    if (socket && roomData.roomId) {
+      socket.emit('add-time', { roomId: roomData.roomId, minutes });
+    }
+  };
+
+  const handleEndSessionClick = () => {
+    if (roomData.role === 'Interviewer') {
+      if (window.confirm("Are you sure you want to end the session? This will open the candidate scorecard evaluation.")) {
+        setShowScorecard(true);
+        if (socket && roomData.roomId) {
+          socket.emit('session-ended', { roomId: roomData.roomId });
+        }
+      }
+    } else {
+      if (window.confirm("Are you sure you want to leave the room? You will miss the interviewer's scorecard rating review.")) {
+        onLeave();
+      }
+    }
+  };
+
+  const handleScorecardSubmit = (scorecard) => {
+    if (socket && roomData.roomId) {
+      socket.emit('submit-feedback', { roomId: roomData.roomId, scorecard });
+    }
+  };
+
   // Safe client-side code runner for JavaScript
   const executeCode = (userCode, handlerName, testCases) => {
     try {
       // Setup the function constructor sandbox
-      // Inject the code string, and return the function referenced by handlerName
       const buildFunction = new Function(`
         ${userCode}
         if (typeof ${handlerName} === 'undefined') {
@@ -62,7 +150,7 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
         // Execute the function
         const actual = userFn(...inputArgs);
         
-        // Match outputs (stringify is sufficient for arrays/primitives comparison)
+        // Match outputs (stringify is sufficient for comparison)
         const expected = tc.expectedOutput;
         const passed = JSON.stringify(actual) === JSON.stringify(expected);
 
@@ -105,10 +193,71 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
 
     // Simulate small compiler loading lag for premium UI feedback feel
     setTimeout(() => {
-      const outcome = executeCode(code, question.handlerName, question.testCases);
-      setRunResults(outcome);
-      setIsRunning(false);
+      if (useCustomInput) {
+        try {
+          let parsedArgs;
+          try {
+            parsedArgs = JSON.parse(customInput);
+            if (!Array.isArray(parsedArgs)) {
+              throw new Error("Custom parameters must be formatted as a JSON array of arguments.");
+            }
+          } catch (e) {
+            setRunResults({
+              error: `Invalid Arguments Format: ${e.message}\nEnsure it is a valid JSON array, e.g. [[2,7,11,15], 9] or ["()"]`,
+              isCustom: true
+            });
+            setIsRunning(false);
+            return;
+          }
+
+          const buildFunction = new Function(`
+            ${code}
+            if (typeof ${question.handlerName} === 'undefined') {
+              throw new Error("Function '${question.handlerName}' is not defined.");
+            }
+            return ${question.handlerName};
+          `);
+
+          const userFn = buildFunction();
+          const t0 = performance.now();
+          const result = userFn(...parsedArgs);
+          const t1 = performance.now();
+
+          setRunResults({
+            result,
+            duration: (t1 - t0).toFixed(2),
+            error: null,
+            isCustom: true,
+            inputStr: customInput
+          });
+        } catch (err) {
+          setRunResults({
+            error: err.message || err.toString(),
+            isCustom: true,
+            inputStr: customInput
+          });
+        } finally {
+          setIsRunning(false);
+        }
+      } else {
+        const outcome = executeCode(code, question.handlerName, question.testCases);
+        setRunResults({ ...outcome, isCustom: false });
+        setIsRunning(false);
+      }
     }, 800);
+  };
+
+  // Format timer
+  const formatTimer = (secs) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
+  const getTimerColorClass = () => {
+    if (timer <= 60) return 'timer-critical';
+    if (timer <= 300) return 'timer-warning';
+    return 'timer-normal';
   };
 
   return (
@@ -118,6 +267,19 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
         <div className="room-header-title">
           <span style={{ color: 'var(--primary)' }}>⚡</span> DevPair Room
         </div>
+
+        {/* Sync Countdown Timer */}
+        <div className={`room-timer-container ${getTimerColorClass()}`}>
+          <Clock size={16} />
+          <span className="timer-text">{formatTimer(timer)}</span>
+          
+          {roomData.role === 'Interviewer' && (
+            <div className="timer-extension-btns">
+              <button onClick={() => handleAddTime(5)} title="Add 5 Minutes">+5m</button>
+              <button onClick={() => handleAddTime(10)} title="Add 10 Minutes">+10m</button>
+            </div>
+          )}
+        </div>
         
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <div className="room-header-status">
@@ -125,7 +287,7 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
             <span>Live Session</span>
           </div>
 
-          <button onClick={onLeave} className="btn-danger" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <button onClick={handleEndSessionClick} className="btn-danger" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <LogOut size={12} />
             <span>End Session</span>
           </button>
@@ -143,10 +305,13 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
             setConsoleOpen={setConsoleOpen}
             runResults={runResults}
             isRunning={isRunning}
+            customInput={customInput}
+            setCustomInput={setCustomInput}
+            setUseCustomInput={setUseCustomInput}
           />
         </div>
 
-        {/* Middle: Real-time Monaco Text Editor */}
+        {/* Middle: Real-time Monaco Text Editor & Whiteboard Canvas */}
         <div className="panel-container">
           <CodeEditorPanel 
             socket={socket}
@@ -174,6 +339,18 @@ function InterviewRoom({ socket, roomData, onLeave, username }) {
           />
         </div>
       </div>
+
+      {/* Post-Interview Evaluation Scorecard Modal Overlay */}
+      {showScorecard && (
+        <ScorecardModal 
+          role={roomData.role}
+          peer={roomData.peer}
+          username={username}
+          onSubmit={handleScorecardSubmit}
+          scorecardData={scorecardData}
+          onBackToLobby={onLeave}
+        />
+      )}
     </div>
   );
 }
