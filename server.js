@@ -102,6 +102,41 @@ io.on('connection', (socket) => {
     socket.to(roomId).emit('chat-message', { sender, message, timestamp: new Date() });
   });
 
+  // Whiteboard Canvas Synchronization
+  socket.on('draw-line', ({ roomId, line }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      if (!room.drawHistory) room.drawHistory = [];
+      room.drawHistory.push(line);
+      socket.to(roomId).emit('draw-line', { line });
+    }
+  });
+
+  socket.on('draw-clear', ({ roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      room.drawHistory = [];
+      socket.to(roomId).emit('draw-clear');
+    }
+  });
+
+  socket.on('request-draw-history', ({ roomId }) => {
+    const room = activeRooms.get(roomId);
+    if (room) {
+      socket.emit('draw-history-sync', { drawHistory: room.drawHistory || [] });
+    }
+  });
+
+  // Interview timer extensions
+  socket.on('add-time', ({ roomId, minutes }) => {
+    io.to(roomId).emit('add-time', { minutes });
+  });
+
+  // Interview scorecard submission
+  socket.on('submit-feedback', ({ roomId, scorecard }) => {
+    io.to(roomId).emit('feedback-submitted', { scorecard });
+  });
+
   // 3. WebRTC Direct Signal Relay
   socket.on('signal', ({ roomId, signalData }) => {
     // Relay signaling data (Offer, Answer, ICE candidates) to other peer in room
@@ -171,7 +206,8 @@ function tryMatchmaking() {
       currentQuestion: initialQuestion,
       code: initialQuestion.starterCode.javascript,
       language: 'javascript',
-      notepad: ''
+      notepad: '',
+      drawHistory: []
     };
 
     activeRooms.set(roomId, roomDetails);
