@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { Code, Play } from 'lucide-react';
+import { Code, Play, Edit3 } from 'lucide-react';
+import WhiteboardPanel from './WhiteboardPanel';
 
 function CodeEditorPanel({ 
   socket, 
@@ -12,6 +13,7 @@ function CodeEditorPanel({
 }) {
   const [code, setCode] = useState(initialCode);
   const [language, setLanguage] = useState(initialLanguage);
+  const [activeTab, setActiveTab] = useState('editor'); // 'editor' or 'whiteboard'
   const editorRef = useRef(null);
 
   // Sync state if question or initials change
@@ -88,75 +90,100 @@ function CodeEditorPanel({
 
   return (
     <div className="panel-container glass-panel" style={{ height: '100%' }}>
-      <div className="panel-header">
-        <div className="panel-title">
-          <Code size={16} style={{ color: 'var(--primary)' }} />
-          <span>Collaborative Editor</span>
-        </div>
-        <div className="editor-header-actions">
-          <select 
-            value={language} 
-            onChange={handleLanguageChange}
-            className="select-lang"
+      <div className="panel-header" style={{ padding: '0 1rem', height: '48px', minHeight: '48px' }}>
+        {/* Toggle tabs on the left */}
+        <div style={{ display: 'flex', height: '100%', alignItems: 'center' }}>
+          <button
+            onClick={() => setActiveTab('editor')}
+            className={`room-tab-btn ${activeTab === 'editor' ? 'active' : ''}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
-            <option value="javascript">JavaScript</option>
-            <option value="python">Python</option>
-            <option value="cpp">C++</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="panel-body" style={{ padding: 0, overflow: 'hidden' }}>
-        <div className="editor-wrapper">
-          <Editor
-            height="100%"
-            language={getMonacoLang(language)}
-            theme="vs-dark"
-            value={code}
-            onChange={handleEditorChange}
-            onMount={handleEditorDidMount}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 14,
-              fontFamily: 'var(--font-mono)',
-              lineHeight: 22,
-              automaticLayout: true,
-              scrollBeyondLastLine: false,
-              padding: { top: 12, bottom: 12 },
-              cursorBlinking: 'smooth',
-              cursorSmoothCaretAnimation: 'on',
-              smoothScrolling: true,
-            }}
-          />
-        </div>
-        <div className="editor-footer">
-          {language !== 'javascript' && (
-            <div style={{
-              marginRight: 'auto',
-              display: 'flex',
-              alignItems: 'center',
-              fontSize: '0.75rem',
-              color: 'var(--text-muted)'
-            }}>
-              ⚠️ Run Code is only available for JavaScript
-            </div>
-          )}
-          <button 
-            className="btn-run" 
-            onClick={handleRunClick}
-            disabled={language !== 'javascript'}
-            style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '6px',
-              opacity: language === 'javascript' ? 1 : 0.5,
-              cursor: language === 'javascript' ? 'pointer' : 'not-allowed'
-            }}
+            <Code size={14} />
+            <span>Code Editor</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('whiteboard')}
+            className={`room-tab-btn ${activeTab === 'whiteboard' ? 'active' : ''}`}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
           >
-            <Play size={14} fill="white" />
-            <span>Run Code</span>
+            <Edit3 size={14} />
+            <span>Whiteboard</span>
           </button>
         </div>
+        
+        {/* Actions on the right, only for Editor */}
+        {activeTab === 'editor' && (
+          <div className="editor-header-actions">
+            <select 
+              value={language} 
+              onChange={handleLanguageChange}
+              className="select-lang"
+            >
+              <option value="javascript">JavaScript</option>
+              <option value="python">Python</option>
+              <option value="cpp">C++</option>
+            </select>
+          </div>
+        )}
+      </div>
+
+      <div className="panel-body" style={{ padding: 0, overflow: 'hidden', height: 'calc(100% - 48px)' }}>
+        {activeTab === 'editor' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div className="editor-wrapper" style={{ flexGrow: 1 }}>
+              <Editor
+                height="100%"
+                language={getMonacoLang(language)}
+                theme="vs-dark"
+                value={code}
+                onChange={handleEditorChange}
+                onMount={handleEditorDidMount}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 14,
+                  fontFamily: 'var(--font-mono)',
+                  lineHeight: 22,
+                  automaticLayout: true,
+                  scrollBeyondLastLine: false,
+                  padding: { top: 12, bottom: 12 },
+                  cursorBlinking: 'smooth',
+                  cursorSmoothCaretAnimation: 'on',
+                  smoothScrolling: true,
+                }}
+              />
+            </div>
+            <div className="editor-footer">
+              {language !== 'javascript' && (
+                <div style={{
+                  marginRight: 'auto',
+                  display: 'flex',
+                  alignItems: 'center',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  ⚠️ Run Code is only available for JavaScript
+                </div>
+              )}
+              <button 
+                className="btn-run" 
+                onClick={handleRunClick}
+                disabled={language !== 'javascript'}
+                style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '6px',
+                  opacity: language === 'javascript' ? 1 : 0.5,
+                  cursor: language === 'javascript' ? 'pointer' : 'not-allowed'
+                }}
+              >
+                <Play size={14} fill="white" />
+                <span>Run Code</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <WhiteboardPanel socket={socket} roomId={roomId} />
+        )}
       </div>
     </div>
   );
