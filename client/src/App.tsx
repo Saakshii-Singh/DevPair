@@ -7,14 +7,9 @@ import Editor from '@monaco-editor/react';
 // The URL of our Express backend WebSocket server instance
 const SOCKET_URL = 'http://localhost:5000';
 
-// ==========================================
-// 1. LANDING COMPONENT
-// Renders the marketing page with glowing background filters and feature description cards.
-// ==========================================
 function LandingPage() {
   return (
     <div className="max-w-6xl mx-auto px-6 py-16 relative overflow-hidden">
-      {/* Background radial gradient glow representing a premium visual design */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
       
       <div className="text-center space-y-6 relative z-10">
@@ -81,12 +76,7 @@ function LandingPage() {
   );
 }
 
-// ==========================================
-// 2. AI INTERVIEW WORKSPACE COMPONENT
-// Handles the Monaco Editor view and simulated AI chatbot dialogue interface.
-// ==========================================
 function AIInterviewWorkspace() {
-  // Chat transcripts between Candidate and AI Recruiter
   const [messages, setMessages] = useState<Array<{ role: 'interviewer' | 'candidate'; content: string }>>([
     { role: 'interviewer', content: "Hello! Welcome to your technical mock interview. Can you implement a function to find indices of two numbers that add up to a target?" }
   ]);
@@ -94,7 +84,6 @@ function AIInterviewWorkspace() {
   const [isRecording, setIsRecording] = useState(false);
   const [code, setCode] = useState('function twoSum(nums, target) {\n  // Write your code here\n  \n}');
 
-  // Handler to post candidate's text reply and trigger AI response
   const handleSend = () => {
     if (!userInput.trim()) return;
     setMessages(prev => [...prev, { role: 'candidate', content: userInput }]);
@@ -121,7 +110,6 @@ function AIInterviewWorkspace() {
           </p>
         </div>
 
-        {/* Monaco Editor Container */}
         <div className="flex-1 rounded-2xl overflow-hidden border border-zinc-800 bg-zinc-950 flex flex-col min-h-0">
           <div className="px-4 py-2 border-b border-zinc-800 bg-zinc-900 flex justify-between items-center flex-shrink-0">
             <span className="text-xs text-zinc-400 font-semibold flex items-center gap-1">
@@ -145,7 +133,6 @@ function AIInterviewWorkspace() {
         </div>
       </div>
 
-      {/* RIGHT PORTION: Recruiter visual panels & chat dialogues */}
       <div className="glass-panel rounded-2xl flex flex-col h-full overflow-hidden">
         {/* Recruiter Header showing name and speaking waves */}
         <div className="px-6 py-4 border-b border-zinc-800 bg-zinc-900/60 flex items-center justify-between flex-shrink-0">
@@ -161,7 +148,6 @@ function AIInterviewWorkspace() {
             </div>
           </div>
           
-          {/* Animated soundwaves reflecting the recruiter speaking states */}
           <div className="flex items-center gap-0.5 h-5">
             <div className="wave-bar w-0.5 h-full bg-indigo-500 rounded-full" style={{ animationDelay: '0.1s' }}></div>
             <div className="wave-bar w-0.5 h-full bg-indigo-400 rounded-full" style={{ animationDelay: '0.3s' }}></div>
@@ -170,7 +156,6 @@ function AIInterviewWorkspace() {
           </div>
         </div>
 
-        {/* Message Logs */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
           {messages.map((m, idx) => (
             <div 
@@ -228,11 +213,6 @@ function AIInterviewWorkspace() {
   );
 }
 
-// ==========================================
-// 3. P2P LOBBY & WEBRTC CALL COMPONENT
-// Manages real-time queue states via Socket.io and coordinates 
-// the browser audio/video WebRTC negotiation flow.
-// ==========================================
 function P2PLobby() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [userId, setUserId] = useState(`User_${Math.floor(Math.random() * 9000 + 1000)}`);
@@ -242,14 +222,12 @@ function P2PLobby() {
   const [role, setRole] = useState<'candidate' | 'interviewer' | null>(null);
   const [peerId, setPeerId] = useState<string | null>(null);
 
-  // WebRTC States and References
   const [isInCall, setIsInCall] = useState(false);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
 
-  // Configuration for ICE Servers (STUN servers tell browsers their public IP addresses)
   const rtcConfig = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -258,7 +236,6 @@ function P2PLobby() {
   };
 
   useEffect(() => {
-    // Connect to WebSocket server on mount
     const s = io(SOCKET_URL);
     setSocket(s);
 
@@ -271,7 +248,6 @@ function P2PLobby() {
       setLobbyMessage(data.message);
     });
 
-    // Callback event when the backend server pairs two candidates
     s.on('match_found', (data: { roomId: string; role: 'candidate' | 'interviewer'; peerId: string }) => {
       setMatchStatus('matched');
       setMatchedRoom(data.roomId);
@@ -280,16 +256,13 @@ function P2PLobby() {
       setLobbyMessage(`Matched! Paired with ${data.peerId}`);
     });
 
-    // Handle inbound signaling data from our matched peer
     s.on('webrtc_signal', async (signal: any) => {
       try {
         if (!peerConnectionRef.current) return;
 
         if (signal.sdp) {
-          // Set remote SDP description (either Offer or Answer configuration)
           await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(signal.sdp));
           
-          // If we received an Offer, we must generate an Answer
           if (signal.sdp.type === 'offer') {
             const answer = await peerConnectionRef.current.createAnswer();
             await peerConnectionRef.current.setLocalDescription(answer);
@@ -312,50 +285,41 @@ function P2PLobby() {
     };
   }, [matchedRoom]);
 
-  // Starts the matchmaking search
   const startSearching = () => {
     if (socket) {
       socket.emit('join_matchmaking', { userId });
     }
   };
 
-  // Cancels active search
   const cancelSearch = () => {
     if (socket) {
       socket.emit('leave_matchmaking');
     }
   };
 
-  // Initializing WebRTC local camera tracks & handshaking
   const enterInterviewRoom = async () => {
     setIsInCall(true);
     try {
-      // 1. Capture local audio and video
       const localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = localStream;
 
-      // Assign local stream to local video tag for self-monitoring
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = localStream;
       }
 
-      // 2. Initialize RTCPeerConnection
       const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionRef.current = pc;
 
-      // 3. Attach our local media tracks to the peer connection
       localStream.getTracks().forEach((track) => {
         pc.addTrack(track, localStream);
       });
 
-      // 4. Handle incoming remote audio/video tracks from our partner
       pc.ontrack = (event) => {
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
         }
       };
 
-      // 5. Detect and route local ICE candidates to our partner via our socket room
       pc.onicecandidate = (event) => {
         if (event.candidate && socket && matchedRoom) {
           socket.emit('webrtc_signal', {
