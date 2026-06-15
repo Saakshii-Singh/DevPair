@@ -278,12 +278,12 @@ function P2PLobby() {
       }
     });
 
-    return () => {
+       return () => {
       // Clean up connection on unmount
       s.disconnect();
       stopCall();
     };
-  }, [matchedRoom]);
+  }, []); 
 
   const startSearching = () => {
     if (socket) {

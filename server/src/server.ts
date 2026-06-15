@@ -4,8 +4,7 @@ import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
-import { GoogleGenAI } from '@google/generative-ai';
-
+import { GoogleGenerativeAI } from '@google/generative-ai';
 // 1. CONFIGURATION & ENVIRONMENT SETUP
 // Load config keys (.env variables like PORT, MONGO_URI, and API keys) into memory
 dotenv.config();
@@ -34,8 +33,7 @@ let genAI: any = null;
 
 if (geminiApiKey && geminiApiKey !== 'YOUR_GEMINI_API_KEY') {
   // Initialize the Generative AI library using the api key from our .env config
-  genAI = new GoogleGenAI({ apiKey: geminiApiKey });
-  console.log('🤖 Google Gemini Client Initialized successfully!');
+genAI = new GoogleGenerativeAI(geminiApiKey);  console.log('🤖 Google Gemini Client Initialized successfully!');
 } else {
   // If no key is found, the system continues in mock mode for development safety
   console.warn('⚠️ GEMINI_API_KEY is missing or invalid. AI features will run in mock demonstration mode.');
