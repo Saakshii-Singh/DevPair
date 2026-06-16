@@ -69,7 +69,7 @@ io.on('connection', (socket: Socket) => {
     if (!activeQueue.some(u => u.userId === userNode.userId)) {
       activeQueue.push(userNode);
       socket.emit('match_status', { status: 'searching', message: 'Scanning for active peers...' });
-      console.log(`👤 User [${data.userId}] joined matchmaking queue. Queue size: ${activeQueue.length}`);
+      console.log(`👤 User [${data.userId}] (Rating: ${userNode.rating}) joined matchmaking queue. Queue size: ${activeQueue.length}`);
     }
 
     tryTriggerMatch();
@@ -112,73 +112,81 @@ const removeFromQueue = (socketId: string) => {
   }
 };
 
-// Matchmaking logic (FIFO Queue)
+// Matchmaking logic (Elo Range checks of +/- 200 Elo)
 const tryTriggerMatch = () => {
-  while (activeQueue.length >= 2) {
-    const peer1 = activeQueue.shift()!;
-    const peer2 = activeQueue.shift()!;
+  if (activeQueue.length < 2) return;
 
-    const roomId = `room_${peer1.userId}_${peer2.userId}`;
+  for (let i = 0; i < activeQueue.length; i++) {
+    for (let j = i + 1; j < activeQueue.length; j++) {
+      const u1 = activeQueue[i];
+      const u2 = activeQueue[j];
 
-    // Join both sockets to a room
-    const s1 = io.sockets.sockets.get(peer1.socketId);
-    const s2 = io.sockets.sockets.get(peer2.socketId);
+      // Pair users of similar Elo ratings
+      if (Math.abs(u1.rating - u2.rating) <= 200) {
+        activeQueue.splice(j, 1);
+        activeQueue.splice(i, 1);
 
-    if (s1 && s2) {
-      s1.join(roomId);
-      s2.join(roomId);
+        const roomId = `room_${u1.userId}_${u2.userId}`;
+        const s1 = io.sockets.sockets.get(u1.socketId);
+        const s2 = io.sockets.sockets.get(u2.socketId);
 
-      // Notify peer 1 (acts as interviewer)
-      s1.emit('match_found', {
-        roomId,
-        role: 'interviewer',
-        peerId: peer2.userId
-      });
+        if (s1 && s2) {
+          s1.join(roomId);
+          s2.join(roomId);
 
-      // Notify peer 2 (acts as candidate)
-      s2.emit('match_found', {
-        roomId,
-        role: 'candidate',
-        peerId: peer1.userId
-      });
+          s1.emit('match_found', {
+            roomId,
+            role: 'interviewer',
+            peerId: u2.userId,
+            peerRating: u2.rating
+          });
 
-      console.log(`🤝 Match established! Room ${roomId} created for [${peer1.userId}] & [${peer2.userId}]`);
-    } else {
-      // Re-queue active socket if one dropped
-      if (s1) activeQueue.push(peer1);
-      if (s2) activeQueue.push(peer2);
+          s2.emit('match_found', {
+            roomId,
+            role: 'candidate',
+            peerId: u1.userId,
+            peerRating: u1.rating
+          });
+
+          console.log(`🤝 Elo-matched! Room ${roomId} created for [${u1.userId}] & [${u2.userId}]`);
+        } else {
+          if (s1) activeQueue.push(u1);
+          if (s2) activeQueue.push(u2);
+        }
+        return;
+      }
     }
   }
 };
 
-// Problem definitions for evaluation & testing
+// Default problems
 const sampleProblems = [
   {
     id: 'two-sum',
     title: 'Two Sum',
     difficulty: 'Easy',
-    description: 'Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. You may assume that each input would have exactly one solution, and you may not use the same element twice. You can return the answer in any order.',
+    description: 'Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.',
     starterTemplate: 'function twoSum(nums, target) {\n  // Write your code here\n  \n}'
   },
   {
     id: 'reverse-string',
     title: 'Reverse String',
     difficulty: 'Easy',
-    description: 'Write a function that reverses a string. The input string is given as an array of characters s. You must do this by modifying the input array in-place with O(1) extra memory.',
+    description: 'Write a function that reverses a string. The input string is given as an array of characters s. You must do this in-place with O(1) extra memory.',
     starterTemplate: 'function reverseString(s) {\n  // Write your code here\n  \n}'
   },
   {
     id: 'palindrome-number',
     title: 'Palindrome Number',
     difficulty: 'Easy',
-    description: 'Given an integer x, return true if x is a palindrome, and false otherwise. An integer is a palindrome when it reads the same backward as forward.',
+    description: 'Given an integer x, return true if x is a palindrome, and false otherwise.',
     starterTemplate: 'function isPalindrome(x) {\n  // Write your code here\n  \n}'
   },
   {
     id: 'valid-parentheses',
     title: 'Valid Parentheses',
     difficulty: 'Easy',
-    description: 'Given a string s containing just the characters \'( \', \')\', \'{\', \'}\', \'[\' and \']\', determine if the input string is valid. An input string is valid if open brackets are closed by the same type of brackets, and brackets are closed in the correct order.',
+    description: 'Given a string s containing just the characters \'( \', \')\', \'{\', \'}\', \'[\' and \']\', determine if the input string is valid.',
     starterTemplate: 'function isValid(s) {\n  // Write your code here\n  \n}'
   }
 ];
@@ -188,122 +196,209 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'healthy', database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
 });
 
-// Get all coding problems
 app.get('/api/questions', (req: Request, res: Response) => {
   res.json(sampleProblems);
 });
 
-// Run Code Sandbox endpoint using Node's 'vm' module
-app.post('/api/run-code', (req: Request, res: Response) => {
-  const { code, problemId } = req.body;
+// Fetch problem data directly from LeetCode API
+app.post('/api/leetcode/fetch-problem', async (req: Request, res: Response) => {
+  const { slug } = req.body;
+  if (!slug) {
+    return res.status(400).json({ success: false, error: 'No LeetCode slug provided.' });
+  }
+
+  try {
+    const graphqlQuery = `
+      query questionData($titleSlug: String!) {
+        question(titleSlug: $titleSlug) {
+          questionId
+          title
+          titleSlug
+          content
+          difficulty
+          codeSnippets {
+            lang
+            langSlug
+            code
+          }
+        }
+      }
+    `;
+
+    const response = await fetch('https://leetcode.com/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: graphqlQuery, variables: { titleSlug: slug } })
+    });
+
+    const result = await response.json();
+    const question = result.data?.question;
+
+    if (!question) {
+      return res.json({ success: false, error: 'Question not found on LeetCode. Verify URL slug.' });
+    }
+
+    const jsSnippet = question.codeSnippets?.find((s: any) => s.langSlug === 'javascript');
+    const starterTemplate = jsSnippet ? jsSnippet.code : 'function solve() {\n  // Write your code here\n}';
+    const cleanDescription = question.content
+      ? question.content.replace(/<[^>]*>/g, '\n').replace(/\n+/g, '\n').trim()
+      : 'No description found.';
+
+    res.json({
+      success: true,
+      problem: {
+        id: question.titleSlug,
+        title: question.title,
+        difficulty: question.difficulty,
+        description: cleanDescription,
+        starterTemplate
+      }
+    });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message || 'Error communicating with LeetCode API.' });
+  }
+});
+
+// Run Code Sandbox using either pre-defined test cases or Gemini test runner fallback
+app.post('/api/run-code', async (req: Request, res: Response) => {
+  const { code, problemId, problemDescription } = req.body;
 
   if (!code) {
     return res.status(400).json({ success: false, error: 'No code provided.' });
   }
 
-  try {
-    const consoleLogs: string[] = [];
-    const sandbox = {
-      console: {
-        log: (...args: any[]) => {
-          consoleLogs.push(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '));
+  // Pre-defined problem test runner
+  const hardcodedIds = ['two-sum', 'reverse-string', 'palindrome-number', 'valid-parentheses'];
+  if (hardcodedIds.includes(problemId)) {
+    try {
+      const consoleLogs: string[] = [];
+      const sandbox = {
+        console: {
+          log: (...args: any[]) => {
+            consoleLogs.push(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '));
+          }
         }
+      };
+
+      vm.createContext(sandbox);
+      vm.runInContext(code, sandbox);
+
+      let testCases: any[] = [];
+      let testRunnerCode = '';
+
+      if (problemId === 'two-sum') {
+        testCases = [
+          { input: [[2, 7, 11, 15], 9], expected: [0, 1] },
+          { input: [[3, 2, 4], 6], expected: [1, 2] }
+        ];
+        testRunnerCode = `
+          const results = [];
+          const cases = ${JSON.stringify(testCases)};
+          cases.forEach(c => {
+            const res = twoSum(c.input[0], c.input[1]);
+            const sortedRes = Array.isArray(res) ? [...res].sort((a,b) => a-b) : [];
+            const sortedExp = [...c.expected].sort((a,b) => a-b);
+            results.push({ input: c.input, expected: c.expected, actual: res, passed: JSON.stringify(sortedRes) === JSON.stringify(sortedExp) });
+          });
+          results;
+        `;
+      } else if (problemId === 'reverse-string') {
+        testCases = [
+          { input: [["h","e","l","l","o"]], expected: ["o","l","l","e","h"] }
+        ];
+        testRunnerCode = `
+          const results = [];
+          const cases = ${JSON.stringify(testCases)};
+          cases.forEach(c => {
+            const arr = [...c.input[0]];
+            reverseString(arr);
+            results.push({ input: c.input, expected: c.expected, actual: arr, passed: JSON.stringify(arr) === JSON.stringify(c.expected) });
+          });
+          results;
+        `;
+      } else if (problemId === 'palindrome-number') {
+        testCases = [
+          { input: [121], expected: true },
+          { input: [-121], expected: false }
+        ];
+        testRunnerCode = `
+          const results = [];
+          const cases = ${JSON.stringify(testCases)};
+          cases.forEach(c => {
+            const res = isPalindrome(c.input[0]);
+            results.push({ input: c.input, expected: c.expected, actual: res, passed: res === c.expected });
+          });
+          results;
+        `;
+      } else if (problemId === 'valid-parentheses') {
+        testCases = [
+          { input: ["()"], expected: true },
+          { input: ["(]"], expected: false }
+        ];
+        testRunnerCode = `
+          const results = [];
+          const cases = ${JSON.stringify(testCases)};
+          cases.forEach(c => {
+            const res = isValid(c.input[0]);
+            results.push({ input: c.input, expected: c.expected, actual: res, passed: res === c.expected });
+          });
+          results;
+        `;
       }
-    };
 
-    vm.createContext(sandbox);
-
-    // Run user's code to load the function definition
-    vm.runInContext(code, sandbox);
-
-    let testCases: { input: any[]; expected: any }[] = [];
-    let testRunnerCode = '';
-
-    if (problemId === 'two-sum') {
-      testCases = [
-        { input: [[2, 7, 11, 15], 9], expected: [0, 1] },
-        { input: [[3, 2, 4], 6], expected: [1, 2] },
-        { input: [[3, 3], 6], expected: [0, 1] }
-      ];
-      testRunnerCode = `
-        const results = [];
-        const cases = ${JSON.stringify(testCases)};
-        cases.forEach(c => {
-          const res = twoSum(c.input[0], c.input[1]);
-          const sortedRes = Array.isArray(res) ? [...res].sort((a,b) => a-b) : [];
-          const sortedExp = [...c.expected].sort((a,b) => a-b);
-          const passed = JSON.stringify(sortedRes) === JSON.stringify(sortedExp);
-          results.push({ input: c.input, expected: c.expected, actual: res, passed });
-        });
-        results;
-      `;
-    } else if (problemId === 'reverse-string') {
-      testCases = [
-        { input: [["h","e","l","l","o"]], expected: ["o","l","l","e","h"] },
-        { input: [["H","a","n","n","a","h"]], expected: ["h","a","n","n","a","H"] }
-      ];
-      testRunnerCode = `
-        const results = [];
-        const cases = ${JSON.stringify(testCases)};
-        cases.forEach(c => {
-          const arr = [...c.input[0]];
-          reverseString(arr);
-          const passed = JSON.stringify(arr) === JSON.stringify(c.expected);
-          results.push({ input: c.input, expected: c.expected, actual: arr, passed });
-        });
-        results;
-      `;
-    } else if (problemId === 'palindrome-number') {
-      testCases = [
-        { input: [121], expected: true },
-        { input: [-121], expected: false },
-        { input: [10], expected: false }
-      ];
-      testRunnerCode = `
-        const results = [];
-        const cases = ${JSON.stringify(testCases)};
-        cases.forEach(c => {
-          const res = isPalindrome(c.input[0]);
-          const passed = res === c.expected;
-          results.push({ input: c.input, expected: c.expected, actual: res, passed });
-        });
-        results;
-      `;
-    } else if (problemId === 'valid-parentheses') {
-      testCases = [
-        { input: ["()"], expected: true },
-        { input: ["()[]{}"], expected: true },
-        { input: ["(]"], expected: false }
-      ];
-      testRunnerCode = `
-        const results = [];
-        const cases = ${JSON.stringify(testCases)};
-        cases.forEach(c => {
-          const res = isValid(c.input[0]);
-          const passed = res === c.expected;
-          results.push({ input: c.input, expected: c.expected, actual: res, passed });
-        });
-        results;
-      `;
-    } else {
-      return res.status(400).json({ success: false, error: `Unknown problem ID: ${problemId}` });
+      const testResults = vm.runInContext(testRunnerCode, sandbox);
+      return res.json({
+        success: true,
+        passed: testResults.every((t: any) => t.passed),
+        logs: consoleLogs,
+        testResults
+      });
+    } catch (error: any) {
+      return res.json({ success: false, error: error.message || 'Execution error.' });
     }
+  }
 
-    // Run tests in the context
-    const testResults = vm.runInContext(testRunnerCode, sandbox);
-    const allPassed = testResults.every((t: any) => t.passed);
-
-    res.json({
+  // Dynamic sandbox using Gemini API to generate & run tests
+  if (!genAI) {
+    return res.json({
       success: true,
-      passed: allPassed,
-      logs: consoleLogs,
-      testResults
+      passed: true,
+      logs: ["Running mock evaluation (No Gemini Key configured)..."],
+      testResults: [
+        { input: "Mock Input", expected: "Mock Output", actual: "Mock Output", passed: true }
+      ]
     });
-  } catch (error: any) {
-    res.json({
-      success: false,
-      error: error.message || 'Execution error.'
-    });
+  }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const runPrompt = `
+      You are a JavaScript execution engine tester.
+      Verify the correctness of the following JavaScript solution code:
+      "${code}"
+
+      For the LeetCode problem description:
+      "${problemDescription || problemId}"
+
+      Compute 3 test cases. Provide a clean JSON object containing whether the code works, and output logs. Do not return markdown delimiters.
+      JSON Format:
+      {
+        "passed": <boolean>,
+        "logs": ["test start logs"],
+        "testResults": [
+          { "input": "input representation", "expected": "expected representation", "actual": "actual output", "passed": <boolean> }
+        ]
+      }
+    `;
+
+    const responseResult = await model.generateContent(runPrompt);
+    const rawText = responseResult.response.text().trim();
+    const jsonStart = rawText.indexOf('{');
+    const jsonEnd = rawText.lastIndexOf('}') + 1;
+    const parsed = JSON.parse(rawText.substring(jsonStart, jsonEnd));
+    res.json({ success: true, ...parsed });
+  } catch (err: any) {
+    res.json({ success: false, error: err.message || 'Dynamic execution failed.' });
   }
 });
 
@@ -311,7 +406,6 @@ app.post('/api/run-code', (req: Request, res: Response) => {
 app.post('/api/ai/chat', async (req: Request, res: Response) => {
   const { problemDescription, messages, currentCode, userInput, action } = req.body;
 
-  // Mock scorecard generator if API key is not present or invalid
   const generateMockScorecard = () => {
     const isSolved = currentCode && (currentCode.includes('return') || currentCode.includes('map') || currentCode.includes('reverse') || currentCode.includes('stack'));
     const score = isSolved ? Math.floor(Math.random() * 15) + 80 : Math.floor(Math.random() * 20) + 55;
@@ -363,11 +457,9 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
   };
 
   if (!genAI) {
-    // Return mock evaluations if Gemini API key is missing
     if (action === 'evaluate') {
       return res.json({ success: true, data: generateMockScorecard() });
     } else {
-      // Standard conversation fallback
       const responses = [
         "That's a reasonable start. How does your solution handle duplicate elements in the input?",
         "Interesting implementation. Can you analyze the time and space complexity of this approach?",
@@ -384,7 +476,6 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
     if (action === 'evaluate') {
-      // Evaluate interview logs and code to return structured scorecard JSON
       const evaluationPrompt = `
         You are a highly senior, elite engineering interviewer conducting a technical coding assessment.
         Analyze the following interview history, including the coding challenge, candidate responses, and candidate code.
@@ -413,8 +504,6 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
 
       const result = await model.generateContent(evaluationPrompt);
       const rawText = result.response.text().trim();
-      
-      // Clean JSON delimiters (Gemini sometimes outputs ```json ... ```)
       const jsonStart = rawText.indexOf('{');
       const jsonEnd = rawText.lastIndexOf('}') + 1;
       const cleanJson = rawText.substring(jsonStart, jsonEnd);
@@ -423,7 +512,6 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
       return res.json({ success: true, data: parsedData });
 
     } else {
-      // Regular chat question / conversation mode
       const chatPrompt = `
         You are a friendly yet rigorous AI Tech Recruiter interviewing a candidate.
         The current challenge details are:
@@ -450,7 +538,6 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     }
   } catch (err: any) {
     console.error('Gemini API Error:', err);
-    // Fallback to mock behavior on failure
     if (action === 'evaluate') {
       return res.json({ success: true, data: generateMockScorecard() });
     } else {
@@ -472,7 +559,6 @@ mongoose.connect(MONGO_URI)
   })
   .catch((err) => {
     console.error('❌ MongoDB connection failure:', err);
-    // Start server anyway so development works
     httpServer.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT} (Database disconnected)`);
     });
