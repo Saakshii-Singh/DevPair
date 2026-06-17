@@ -35,7 +35,37 @@ if (geminiApiKey && geminiApiKey !== 'YOUR_GEMINI_API_KEY') {
   console.warn('⚠️ GEMINI_API_KEY is missing or invalid. AI features will run in mock mode.');
 }
 
-// Socket.io Setup
+// ==========================================
+// MONGOOSE SCHEMAS & DATABASE PERSISTENCE
+// ==========================================
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }, // Plain text for dev simplicity
+  nickname: { type: String, required: true },
+  rating: { type: Number, default: 1200 },
+  peakRating: { type: Number, default: 1200 },
+  createdProblemsSolved: { type: Number, default: 0 }
+});
+
+const InterviewSessionSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  problemTitle: { type: String, required: true },
+  difficulty: { type: String, required: true },
+  code: { type: String, required: true },
+  overallScore: { type: Number, required: true },
+  technicalScore: { type: Number, required: true },
+  communicationScore: { type: Number, required: true },
+  behavioralScore: { type: Number, required: true },
+  feedback: { type: String, default: '' },
+  date: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model('User', UserSchema);
+const InterviewSession = mongoose.model('InterviewSession', InterviewSessionSchema);
+
+// ==========================================
+// SOCKET.IO MATCHMAKING & RELAYS
+// ==========================================
 const io = new Server(httpServer, {
   cors: {
     origin: clientUrl,
@@ -44,7 +74,6 @@ const io = new Server(httpServer, {
   }
 });
 
-// Interface for active queue users
 interface QueueUser {
   socketId: string;
   userId: string;
@@ -53,11 +82,9 @@ interface QueueUser {
 
 const activeQueue: QueueUser[] = [];
 
-// Socket.io connection logic
 io.on('connection', (socket: Socket) => {
   console.log(`🔌 Client connected to WebSocket server: ${socket.id}`);
 
-  // Join matchmaking lobby
   socket.on('join_matchmaking', (data: { userId: string; rating?: number }) => {
     const userNode: QueueUser = {
       socketId: socket.id,
@@ -65,54 +92,44 @@ io.on('connection', (socket: Socket) => {
       rating: data.rating || 1200
     };
 
-    // Prevent duplicate entries in queue
     if (!activeQueue.some(u => u.userId === userNode.userId)) {
       activeQueue.push(userNode);
       socket.emit('match_status', { status: 'searching', message: 'Scanning for active peers...' });
-      console.log(`👤 User [${data.userId}] (Rating: ${userNode.rating}) joined matchmaking queue. Queue size: ${activeQueue.length}`);
+      console.log(`👤 User [${data.userId}] (Rating: ${userNode.rating}) joined matchmaking queue.`);
     }
 
     tryTriggerMatch();
   });
 
-  // Cancel matchmaking
   socket.on('leave_matchmaking', () => {
     removeFromQueue(socket.id);
     socket.emit('match_status', { status: 'idle', message: 'Left matchmaking queue.' });
   });
 
-  // WebRTC signaling relay between peers in a match
   socket.on('webrtc_signal', (data: { roomId: string; signal: any }) => {
     socket.to(data.roomId).emit('webrtc_signal', data.signal);
   });
 
-  // Real-time collaborative code synchronization
   socket.on('code_sync', (data: { roomId: string; code: string }) => {
     socket.to(data.roomId).emit('code_sync', { code: data.code });
   });
 
-  // Live peer text chat messages
   socket.on('peer_message', (data: { roomId: string; message: any }) => {
     socket.to(data.roomId).emit('peer_message', data.message);
   });
 
-  // Client disconnected
   socket.on('disconnect', () => {
-    console.log(`❌ Client disconnected: ${socket.id}`);
     removeFromQueue(socket.id);
   });
 });
 
-// Helper to remove user from matchmaking queue
 const removeFromQueue = (socketId: string) => {
   const index = activeQueue.findIndex(u => u.socketId === socketId);
   if (index !== -1) {
-    const user = activeQueue.splice(index, 1)[0];
-    console.log(`👤 User [${user.userId}] removed from queue. Queue size: ${activeQueue.length}`);
+    activeQueue.splice(index, 1);
   }
 };
 
-// Matchmaking logic (Elo Range checks of +/- 200 Elo)
 const tryTriggerMatch = () => {
   if (activeQueue.length < 2) return;
 
@@ -121,7 +138,7 @@ const tryTriggerMatch = () => {
       const u1 = activeQueue[i];
       const u2 = activeQueue[j];
 
-      // Pair users of similar Elo ratings
+      // Pair users of similar ratings (within 200 Elo)
       if (Math.abs(u1.rating - u2.rating) <= 200) {
         activeQueue.splice(j, 1);
         activeQueue.splice(i, 1);
@@ -134,21 +151,8 @@ const tryTriggerMatch = () => {
           s1.join(roomId);
           s2.join(roomId);
 
-          s1.emit('match_found', {
-            roomId,
-            role: 'interviewer',
-            peerId: u2.userId,
-            peerRating: u2.rating
-          });
-
-          s2.emit('match_found', {
-            roomId,
-            role: 'candidate',
-            peerId: u1.userId,
-            peerRating: u1.rating
-          });
-
-          console.log(`🤝 Elo-matched! Room ${roomId} created for [${u1.userId}] & [${u2.userId}]`);
+          s1.emit('match_found', { roomId, role: 'interviewer', peerId: u2.userId, peerRating: u2.rating });
+          s2.emit('match_found', { roomId, role: 'candidate', peerId: u1.userId, peerRating: u1.rating });
         } else {
           if (s1) activeQueue.push(u1);
           if (s2) activeQueue.push(u2);
@@ -159,7 +163,7 @@ const tryTriggerMatch = () => {
   }
 };
 
-// Default problems
+// Default Coding Problems
 const sampleProblems = [
   {
     id: 'two-sum',
@@ -191,16 +195,127 @@ const sampleProblems = [
   }
 ];
 
-// REST API Routes
-app.get('/api/health', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'healthy', database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
+// ==========================================
+// REST API ROUTES
+// ==========================================
+
+// Authentication Routes
+app.post('/api/auth/signup', async (req: Request, res: Response) => {
+  const { email, password, nickname } = req.body;
+  try {
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'Email already registered.' });
+    }
+    const user = await User.create({ email, password, nickname });
+    res.json({ success: true, user: { id: user._id, email: user.email, nickname: user.nickname, rating: user.rating } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  const { email, password } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user || user.password !== password) {
+      return res.status(400).json({ success: false, error: 'Invalid email or password.' });
+    }
+    res.json({ success: true, user: { id: user._id, email: user.email, nickname: user.nickname, rating: user.rating } });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// User Dashboard Statistics & Solved Problems History
+app.get('/api/user/dashboard/:userId', async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  try {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ success: false, error: 'Invalid User ID.' });
+    }
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    const sessions = await InterviewSession.find({ userId }).sort({ date: -1 });
+    
+    // Calculate category averages
+    let techAvg = 0, commAvg = 0, behavAvg = 0;
+    if (sessions.length > 0) {
+      techAvg = Math.round(sessions.reduce((acc, s) => acc + s.technicalScore, 0) / sessions.length);
+      commAvg = Math.round(sessions.reduce((acc, s) => acc + s.communicationScore, 0) / sessions.length);
+      behavAvg = Math.round(sessions.reduce((acc, s) => acc + s.behavioralScore, 0) / sessions.length);
+    }
+
+    res.json({
+      success: true,
+      profile: {
+        nickname: user.nickname,
+        rating: user.rating,
+        peakRating: user.peakRating,
+        solvedCount: user.createdProblemsSolved
+      },
+      stats: {
+        totalInterviews: sessions.length,
+        technicalAverage: techAvg,
+        communicationAverage: commAvg,
+        behavioralAverage: behavAvg
+      },
+      history: sessions
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Log Session solved results and update user Elo Rating score in MongoDB
+app.post('/api/user/session', async (req: Request, res: Response) => {
+  const { userId, problemTitle, difficulty, code, overallScore, technicalScore, communicationScore, behavioralScore, feedback } = req.body;
+  try {
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found.' });
+
+    // Elo adjustment calculation
+    let ratingChange = 0;
+    if (overallScore > 75) {
+      ratingChange = Math.round((overallScore - 75) * 0.8);
+    } else if (overallScore < 60) {
+      ratingChange = -Math.round((60 - overallScore) * 0.8);
+    }
+
+    const nextRating = Math.max(800, user.rating + ratingChange);
+    user.rating = nextRating;
+    if (nextRating > user.peakRating) {
+      user.peakRating = nextRating;
+    }
+    user.createdProblemsSolved += 1;
+    await user.save();
+
+    const session = await InterviewSession.create({
+      userId,
+      problemTitle,
+      difficulty,
+      code,
+      overallScore,
+      technicalScore,
+      communicationScore,
+      behavioralScore,
+      feedback
+    });
+
+    res.json({ success: true, newRating: user.rating, session });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get('/api/questions', (req: Request, res: Response) => {
   res.json(sampleProblems);
 });
 
-// Fetch problem data directly from LeetCode API
+// Fetch LeetCode challenge using corrected browser-like Request Headers
 app.post('/api/leetcode/fetch-problem', async (req: Request, res: Response) => {
   const { slug } = req.body;
   if (!slug) {
@@ -225,9 +340,14 @@ app.post('/api/leetcode/fetch-problem', async (req: Request, res: Response) => {
       }
     `;
 
+    // Fetch problem using valid browser-like headers
     const response = await fetch('https://leetcode.com/graphql', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Referer': 'https://leetcode.com'
+      },
       body: JSON.stringify({ query: graphqlQuery, variables: { titleSlug: slug } })
     });
 
@@ -235,14 +355,16 @@ app.post('/api/leetcode/fetch-problem', async (req: Request, res: Response) => {
     const question = result.data?.question;
 
     if (!question) {
-      return res.json({ success: false, error: 'Question not found on LeetCode. Verify URL slug.' });
+      return res.json({ success: false, error: 'LeetCode problem not found. Please check slug spelling.' });
     }
 
     const jsSnippet = question.codeSnippets?.find((s: any) => s.langSlug === 'javascript');
     const starterTemplate = jsSnippet ? jsSnippet.code : 'function solve() {\n  // Write your code here\n}';
+    
+    // HTML stripper
     const cleanDescription = question.content
       ? question.content.replace(/<[^>]*>/g, '\n').replace(/\n+/g, '\n').trim()
-      : 'No description found.';
+      : 'No description details found.';
 
     res.json({
       success: true,
@@ -255,11 +377,11 @@ app.post('/api/leetcode/fetch-problem', async (req: Request, res: Response) => {
       }
     });
   } catch (err: any) {
-    res.json({ success: false, error: err.message || 'Error communicating with LeetCode API.' });
+    res.json({ success: false, error: err.message || 'Error communicating with LeetCode.' });
   }
 });
 
-// Run Code Sandbox using either pre-defined test cases or Gemini test runner fallback
+// Run Code Sandbox using Node vm
 app.post('/api/run-code', async (req: Request, res: Response) => {
   const { code, problemId, problemDescription } = req.body;
 
@@ -267,7 +389,6 @@ app.post('/api/run-code', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'No code provided.' });
   }
 
-  // Pre-defined problem test runner
   const hardcodedIds = ['two-sum', 'reverse-string', 'palindrome-number', 'valid-parentheses'];
   if (hardcodedIds.includes(problemId)) {
     try {
@@ -406,6 +527,41 @@ app.post('/api/run-code', async (req: Request, res: Response) => {
 app.post('/api/ai/chat', async (req: Request, res: Response) => {
   const { problemDescription, messages, currentCode, userInput, action } = req.body;
 
+  // Enhanced dynamic mock dialogue simulation when Gemini API key is missing
+  const getMockDialogueResponse = (historyLen: number, problem: string) => {
+    const stage = Math.floor(historyLen / 2);
+    
+    if (problem.toLowerCase().includes('two sum')) {
+      const responses = [
+        "Welcome! We are starting the interview with 'Two Sum'. What is your general strategy? How would you solve this in O(N) time complexity?",
+        "A HashMap lookup is indeed optimal here. Can you walk me through what you store as key/value in your Map?",
+        "Correct. If you loop through, check if (target - current) is in the Map. Go ahead and start typing this out in the Sandbox editor.",
+        "Excellent draft. Before submitting, what would happen if the array is empty or no two numbers sum to the target? How does your code handle edge-cases?",
+        "Looking very solid. Run your code in the sandbox to verify tests, and hit 'Finish & Score' in the top right to generate your capability metrics report!"
+      ];
+      return responses[Math.min(stage, responses.length - 1)];
+    } else if (problem.toLowerCase().includes('reverse string')) {
+      const responses = [
+        "Welcome! Let's examine 'Reverse String'. How do we achieve this in-place with O(1) constant extra memory?",
+        "Right, we should avoid creating a new array. A two-pointer approach starting at left and right works. What is the condition of your swap loop?",
+        "Yes, while (left < right). Go ahead and draft the swapping logic in the Monaco coding screen.",
+        "Good. How does your solution handle arrays with odd lengths? Does the middle element need an explicit swap?",
+        "Everything checks out. Compile your code to verify it reverses correctly, and then feel free to finalize the interview session!"
+      ];
+      return responses[Math.min(stage, responses.length - 1)];
+    } else {
+      // General question fallback
+      const responses = [
+        "Welcome to the mock assessment. Can you describe your initial approach to this challenge?",
+        "Good. What datastructures would be most optimal here and what are their complexity trade-offs?",
+        "Got it. Go ahead and write the function template inside the Sandbox Monaco Editor.",
+        "I see your draft. Can we check edge cases? What if the parameters are null or empty?",
+        "The implementation is ready. Feel free to compile it to verify correctness, and click 'Finish & Score' when you are happy to get graded!"
+      ];
+      return responses[Math.min(stage, responses.length - 1)];
+    }
+  };
+
   const generateMockScorecard = () => {
     const isSolved = currentCode && (currentCode.includes('return') || currentCode.includes('map') || currentCode.includes('reverse') || currentCode.includes('stack'));
     const score = isSolved ? Math.floor(Math.random() * 15) + 80 : Math.floor(Math.random() * 20) + 55;
@@ -460,15 +616,8 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
     if (action === 'evaluate') {
       return res.json({ success: true, data: generateMockScorecard() });
     } else {
-      const responses = [
-        "That's a reasonable start. How does your solution handle duplicate elements in the input?",
-        "Interesting implementation. Can you analyze the time and space complexity of this approach?",
-        "Could you run through a quick dry-run of your code with a small sample test case?",
-        "That works! How would you optimize this if we had memory limitations?",
-        "Alright, if you are happy with the solution, you can submit and get your evaluation report."
-      ];
-      const nextIndex = Math.min(messages.length, responses.length - 1);
-      return res.json({ success: true, message: responses[nextIndex] });
+      const replyText = getMockDialogueResponse(messages.length, problemDescription || 'General');
+      return res.json({ success: true, message: replyText });
     }
   }
 
@@ -512,8 +661,16 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
       return res.json({ success: true, data: parsedData });
 
     } else {
+      // System prompt mapping out realistic multi-stage interview behavior
       const chatPrompt = `
         You are a friendly yet rigorous AI Tech Recruiter interviewing a candidate.
+        Maintain standard professional persona. Walk them through these progressive stages:
+        1. Behavioral Warmup (ask them to describe their approach or background briefly).
+        2. Presentation of challenge.
+        3. Implementation review (as they type code, give minor hints or reviews).
+        4. Complexity Analysis (ask them to explain Big O time and space parameters).
+        5. Wrap-up.
+
         The current challenge details are:
         ${JSON.stringify(problemDescription)}
         
@@ -526,10 +683,8 @@ app.post('/api/ai/chat', async (req: Request, res: Response) => {
         Candidate's latest input:
         "${userInput}"
         
-        Provide a concise, conversational follow-up (1-3 sentences).
-        If the candidate is stuck, provide a subtle, helpful hint.
-        If their solution is correct, ask them about time/space complexity or code optimization.
-        Do not output JSON, code blocks, or markdown headings. Keep it brief and speak directly to the candidate.
+        Provide a concise, conversational follow-up (1-3 sentences) aligning with the current stage of conversation.
+        Do not output JSON, code blocks, or markdown headings. Speak directly to the candidate.
       `;
 
       const result = await model.generateContent(chatPrompt);
