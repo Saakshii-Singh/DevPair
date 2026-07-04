@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import { LayoutDashboard } from 'lucide-react';
-implements
 // Import Types
 import type { UserSession } from './types';
 // Import Component & Pages
