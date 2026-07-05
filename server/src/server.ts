@@ -114,6 +114,14 @@ io.on('connection', (socket: Socket) => {
     socket.to(data.roomId).emit('code_sync', { code: data.code });
   });
 
+  socket.on('notepad_sync', (data: { roomId: string; text: string }) => {
+    socket.to(data.roomId).emit('notepad_sync', { text: data.text });
+  });
+
+  socket.on('execution_sync', (data: { roomId: string; results: any }) => {
+    socket.to(data.roomId).emit('execution_sync', { results: data.results });
+  });
+
   socket.on('peer_message', (data: { roomId: string; message: any }) => {
     socket.to(data.roomId).emit('peer_message', data.message);
   });

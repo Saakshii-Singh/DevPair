@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { LogOut, Award, Brain } from 'lucide-react';
 import type { HistoryItem } from '../types';
 const SOCKET_URL = 'http://localhost:5000';
@@ -10,7 +10,6 @@ export default function DashboardPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedHistoryScorecard, setSelectedHistoryScorecard] = useState<HistoryItem | null>(null);
-  const navigate = useNavigate();
 
   const user = JSON.parse(localStorage.getItem('vantage_user') || '{}');
 

@@ -1,6 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
-import { Terminal, Brain, Code, Sparkles, Mic, Play, Award, Send, CheckCircle, XCircle, Lock, Menu } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Terminal, Sparkles, Play, Award, Send, CheckCircle, XCircle, Lock, Menu } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import type { Problem, Scorecard } from '../types';
 const SOCKET_URL = 'http://localhost:5000';

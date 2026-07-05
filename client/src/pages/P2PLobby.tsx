@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { Users, User, Code, PhoneOff, Video, Mic, MessageSquare, Send } from 'lucide-react';
 import Editor from '@monaco-editor/react';
@@ -20,6 +20,13 @@ export default function P2PLobby() {
   const [code, setCode] = useState('// Waiting for match sync...');
   const [peerMessages, setPeerMessages] = useState<Array<{ sender: string; text: string }>>([]);
   const [peerInput, setPeerInput] = useState('');
+
+  const [activeRightTab, setActiveRightTab] = useState<'chat' | 'notes'>('chat');
+  const [notepadText, setNotepadText] = useState('');
+
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
+  const [runResults, setRunResults] = useState<any>(null);
 
   const [userRating] = useState<number>(() => {
     return Number(localStorage.getItem('vantage_rating')) || 1200;
@@ -73,6 +80,15 @@ export default function P2PLobby() {
       setCode(data.code);
     });
 
+    s.on('notepad_sync', (data: { text: string }) => {
+      setNotepadText(data.text);
+    });
+
+    s.on('execution_sync', (data: { results: any }) => {
+      setRunResults(data.results);
+      setConsoleOpen(true);
+    });
+
     s.on('peer_message', (data: { sender: string; text: string }) => {
       setPeerMessages(prev => [...prev, data]);
     });
@@ -110,6 +126,50 @@ export default function P2PLobby() {
     setCode(newVal);
     if (socket && matchedRoom && role === 'candidate') {
       socket.emit('code_sync', { roomId: matchedRoom, code: newVal });
+    }
+  };
+
+  const handleNotepadChange = (newText: string) => {
+    setNotepadText(newText);
+    if (socket && matchedRoom) {
+      socket.emit('notepad_sync', { roomId: matchedRoom, text: newText });
+    }
+  };
+
+  const handleRunCode = async () => {
+    if (!socket || !matchedRoom) return;
+    setIsRunning(true);
+    setConsoleOpen(true);
+    setRunResults(null);
+
+    try {
+      const response = await fetch(`${SOCKET_URL}/api/run-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          problemId: 'two-sum',
+          problemDescription: 'Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.'
+        })
+      });
+
+      const data = await response.json();
+      setRunResults(data);
+
+      socket.emit('execution_sync', {
+        roomId: matchedRoom,
+        results: data
+      });
+    } catch (err: any) {
+      console.error("Execution failure:", err);
+      const errorData = { success: false, error: err.message || 'Execution error.' };
+      setRunResults(errorData);
+      socket.emit('execution_sync', {
+        roomId: matchedRoom,
+        results: errorData
+      });
+    } finally {
+      setIsRunning(false);
     }
   };
 
@@ -211,6 +271,10 @@ export default function P2PLobby() {
     }
     setMatchStatus('idle');
     setPeerMessages([]);
+    setNotepadText('');
+    setRunResults(null);
+    setConsoleOpen(false);
+    setIsRunning(false);
   };
 
   return (
@@ -379,16 +443,27 @@ export default function P2PLobby() {
             </div>
           </div>
 
-          <div className="lg:col-span-5 flex flex-col bg-zinc-950 rounded-2xl border border-hairline overflow-hidden min-h-0">
+          <div className="lg:col-span-5 flex flex-col bg-zinc-950 rounded-2xl border border-hairline overflow-hidden min-h-0 relative">
             <div className="px-4 py-2 border-b border-hairline bg-zinc-900/40 flex justify-between items-center flex-shrink-0">
               <span className="text-[10px] text-zinc-500 font-mono flex items-center gap-1.5">
                 <Code className="size-3.5" /> editor.js (Real-time Synced)
               </span>
-              <span className="text-[9px] uppercase tracking-widest text-zinc-550 border border-zinc-800 px-2 py-0.5 rounded">
-                {role === 'candidate' ? 'Write Code Mode' : 'Read Only Monitor'}
-              </span>
+              <div className="flex items-center gap-2">
+                {role === 'candidate' && (
+                  <button
+                    onClick={handleRunCode}
+                    disabled={isRunning}
+                    className="px-3 py-1 bg-accent hover:brightness-110 disabled:opacity-50 text-accent-foreground text-[10px] font-bold rounded-full transition flex items-center gap-1"
+                  >
+                    {isRunning ? 'Running...' : 'Run Code'}
+                  </button>
+                )}
+                <span className="text-[9px] uppercase tracking-widest text-zinc-55 border border-zinc-800 px-2 py-0.5 rounded">
+                  {role === 'candidate' ? 'Write Code Mode' : 'Read Only Monitor'}
+                </span>
+              </div>
             </div>
-            <div className="flex-1 min-h-0">
+            <div className="flex-1 min-h-0 relative">
               <Editor
                 height="100%"
                 defaultLanguage="javascript"
@@ -402,46 +477,135 @@ export default function P2PLobby() {
                   readOnly: role !== 'candidate' 
                 }}
               />
+
+              {/* Collaborative Test Console Output Overlay */}
+              {consoleOpen && (
+                <div className="absolute bottom-0 left-0 right-0 h-48 bg-zinc-950 border-t border-hairline z-10 flex flex-col overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-hairline bg-zinc-900/60 flex justify-between items-center flex-shrink-0">
+                    <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <span>⚙️</span> Execution Output
+                    </span>
+                    <button 
+                      onClick={() => setConsoleOpen(false)}
+                      className="text-zinc-500 hover:text-zinc-300 text-[10px] font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex-grow overflow-y-auto p-4 font-mono text-[10px] space-y-2 leading-relaxed text-zinc-300">
+                    {isRunning ? (
+                      <p className="text-zinc-555 animate-pulse">Compiling and running test cases...</p>
+                    ) : runResults ? (
+                      <div>
+                        <p className="mb-2 font-bold">
+                          Status:{' '}
+                          <span className={runResults.success && runResults.passed ? 'text-emerald-500' : 'text-rose-500'}>
+                            {runResults.success && runResults.passed ? 'Accepted (Pass)' : 'Failed'}
+                          </span>
+                        </p>
+
+                        {runResults.error && (
+                          <p className="text-rose-400 bg-rose-95/20 p-2 rounded border border-rose-900/30">
+                            Error: {runResults.error}
+                          </p>
+                        )}
+
+                        {runResults.logs && runResults.logs.length > 0 && (
+                          <div className="mb-3">
+                            <p className="text-zinc-500 font-bold">Console Logs:</p>
+                            <pre className="text-zinc-400 bg-zinc-900/80 p-2 rounded border border-hairline mt-1 whitespace-pre-wrap">{runResults.logs.join('\n')}</pre>
+                          </div>
+                        )}
+
+                        {runResults.testResults && (
+                          <div className="space-y-2">
+                            <p className="text-zinc-500 font-bold">Test Cases:</p>
+                            {runResults.testResults.map((t: any, idx: number) => (
+                              <div key={idx} className={`p-2 rounded border ${t.passed ? 'bg-emerald-950/10 border-emerald-900/30 text-emerald-400' : 'bg-rose-950/10 border-rose-900/30 text-rose-400'}`}>
+                                <div className="font-bold flex items-center gap-1">
+                                  <span>{t.passed ? '✓' : '✗'}</span> Case {idx + 1}
+                                </div>
+                                <div className="text-[9px] text-zinc-450 mt-1 pl-3 space-y-0.5">
+                                  <div>Input: <code className="text-zinc-300">{JSON.stringify(t.input)}</code></div>
+                                  <div>Expected: <code className="text-zinc-300">{JSON.stringify(t.expected)}</code></div>
+                                  <div>Actual: <code className={t.passed ? 'text-emerald-400' : 'text-rose-400'}>{JSON.stringify(t.actual)}</code></div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-zinc-500">Run code to see outputs.</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
           <div className="lg:col-span-3 flex flex-col bg-surface/10 border border-hairline rounded-2xl overflow-hidden min-h-0">
-            <div className="px-4 py-2.5 border-b border-hairline bg-zinc-900/40 flex items-center gap-1.5 flex-shrink-0">
-              <MessageSquare className="size-3.5 text-accent" />
-              <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">Lobby Chat</span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
-              {peerMessages.map((m, idx) => (
-                <div key={idx} className={`flex flex-col text-[11px] leading-relaxed max-w-[85%] ${m.sender === userId ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
-                  <span className="text-[8px] text-zinc-500 font-bold uppercase tracking-widest mb-0.5">{m.sender === userId ? 'You' : m.sender}</span>
-                  <div className={`p-2.5 rounded-xl border ${
-                    m.sender === userId 
-                      ? 'bg-accent/10 border-accent/20 text-accent rounded-br-none' 
-                      : 'bg-zinc-855/50 border-hairline text-zinc-300 rounded-bl-none'
-                  }`}>
-                    {m.text}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-3 border-t border-hairline bg-zinc-900/30 flex items-center gap-1.5 flex-shrink-0">
-              <input
-                type="text"
-                placeholder="Type a message..."
-                className="flex-1 bg-zinc-950 border border-hairline rounded-full px-3 py-1.5 text-[11px] focus:outline-none focus:border-accent transition text-foreground"
-                value={peerInput}
-                onChange={(e) => setPeerInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && sendPeerMessage()}
-              />
+            <div className="px-4 py-2 border-b border-hairline bg-zinc-900/40 flex justify-around items-center flex-shrink-0 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
               <button 
-                onClick={sendPeerMessage}
-                className="p-2 bg-accent hover:brightness-110 text-accent-foreground rounded-full transition flex-shrink-0"
+                onClick={() => setActiveRightTab('chat')}
+                className={`pb-1.5 pt-1.5 border-b-2 transition-colors flex items-center gap-1 ${activeRightTab === 'chat' ? 'border-accent text-accent' : 'border-transparent text-zinc-450 hover:text-zinc-200'}`}
               >
-                <Send className="w-3.5 h-3.5" />
+                <MessageSquare className="size-3 text-current" />
+                Lobby Chat
+              </button>
+              <button 
+                onClick={() => setActiveRightTab('notes')}
+                className={`pb-1.5 pt-1.5 border-b-2 transition-colors flex items-center gap-1 ${activeRightTab === 'notes' ? 'border-accent text-accent' : 'border-transparent text-zinc-450 hover:text-zinc-200'}`}
+              >
+                <span>✏️</span>
+                Shared Notes
               </button>
             </div>
+
+            {activeRightTab === 'chat' ? (
+              <>
+                <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+                  {peerMessages.map((m, idx) => (
+                    <div key={idx} className={`flex flex-col text-[11px] leading-relaxed max-w-[85%] ${m.sender === userId ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                      <span className="text-[8px] text-zinc-500 font-bold uppercase tracking-widest mb-0.5">{m.sender === userId ? 'You' : m.sender}</span>
+                      <div className={`p-2.5 rounded-xl border ${
+                        m.sender === userId 
+                          ? 'bg-accent/10 border-accent/20 text-accent rounded-br-none' 
+                          : 'bg-zinc-855/50 border-hairline text-zinc-300 rounded-bl-none'
+                      }`}>
+                        {m.text}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="p-3 border-t border-hairline bg-zinc-900/30 flex items-center gap-1.5 flex-shrink-0">
+                  <input
+                    type="text"
+                    placeholder="Type a message..."
+                    className="flex-1 bg-zinc-950 border border-hairline rounded-full px-3 py-1.5 text-[11px] focus:outline-none focus:border-accent transition text-foreground"
+                    value={peerInput}
+                    onChange={(e) => setPeerInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && sendPeerMessage()}
+                  />
+                  <button 
+                    onClick={sendPeerMessage}
+                    className="p-2 bg-accent hover:brightness-110 text-accent-foreground rounded-full transition flex-shrink-0"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex-grow flex flex-col p-4 h-full min-h-0">
+                <textarea
+                  value={notepadText}
+                  onChange={(e) => handleNotepadChange(e.target.value)}
+                  placeholder="Shared scratchpad for notes, pseudo-code, hints..."
+                  className="w-full flex-1 bg-zinc-950/40 border border-hairline rounded-xl p-3 text-xs focus:outline-none focus:border-accent transition text-zinc-300 resize-none font-sans leading-relaxed"
+                />
+              </div>
+            )}
           </div>
         </div>
       )}

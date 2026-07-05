@@ -1,6 +1,5 @@
-import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Brain, Code, Users, Sparkles, ChevronRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Brain, Code, Sparkles, ChevronRight } from 'lucide-react';
 
 const sarahImg = "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?q=80&w=256";
 
