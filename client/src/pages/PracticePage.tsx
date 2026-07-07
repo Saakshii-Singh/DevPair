@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Terminal, Sparkles, Play, Award, Send, CheckCircle, XCircle, Lock, Menu } from 'lucide-react';
+import { Terminal, Sparkles, Play, Award, Send, CheckCircle, XCircle, Lock, Menu, Volume2, VolumeX } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import type { Problem, Scorecard } from '../types';
 const SOCKET_URL = 'http://localhost:5000';
@@ -31,8 +31,37 @@ export default function PracticePage() {
   const [scorecard, setScorecard] = useState<Scorecard | null>(null);
   const [loadingScorecard, setLoadingScorecard] = useState(false);
 
+  const [isVoiceMuted, setIsVoiceMuted] = useState(false);
+  const recognitionRef = useRef<any>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const problem = problems[currentProbIdx];
+
+  // Voice Synthesis (Text-to-Speech)
+  const speakText = (text: string) => {
+    if (isVoiceMuted || !('speechSynthesis' in window)) return;
+
+    window.speechSynthesis.cancel();
+
+    // Clean text by stripping code blocks, inline backticks, markdown links, and formatting signs
+    const cleanText = text
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[*#_]+/g, ' ');
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    utterance.lang = 'en-US';
+
+    const voices = window.speechSynthesis.getVoices();
+    const targetVoice = voices.find(v => v.lang.startsWith('en') && (v.name.includes('Google') || v.name.includes('Natural') || v.name.includes('Microsoft')));
+    if (targetVoice) {
+      utterance.voice = targetVoice;
+    }
+
+    window.speechSynthesis.speak(utterance);
+  };
 
   // Fetch problems on mount
   useEffect(() => {
@@ -42,12 +71,26 @@ export default function PracticePage() {
         setProblems(data);
         if (data.length > 0) {
           setCode(data[0].starterTemplate);
+          const greeting = `Hello! I'm Vantage AI Recruiter. I've loaded the coding problem: "${data[0].title}". Take a moment to read the details on your screen, design your solution in the code editor, and let me know when you're ready or walk me through your initial thoughts.`;
           setMessages([
-            { role: 'interviewer', content: `Hello! I'm Vantage AI Recruiter. I've loaded the coding problem: "${data[0].title}". Take a moment to read the details on your screen, design your solution in the code editor, and let me know when you're ready or walk me through your initial thoughts.` }
+            { role: 'interviewer', content: greeting }
           ]);
+          // Wait briefly for speech synthesis voices to load
+          setTimeout(() => {
+            if (!isVoiceMuted) speakText(greeting);
+          }, 200);
         }
       })
       .catch(err => console.error("Error loading problems:", err));
+
+    return () => {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
   }, []);
 
   // Timer logic based on recording state
@@ -77,9 +120,11 @@ export default function PracticePage() {
     setScorecard(null);
     setSeconds(0);
     setIsRecording(false);
+    const switchMsg = `We've switched over to the "${problems[idx].title}" problem. Take a look at the instructions, type your solution, and explain how you plan to implement this.`;
     setMessages([
-      { role: 'interviewer', content: `We've switched over to the "${problems[idx].title}" problem. Take a look at the instructions, type your solution, and explain how you plan to implement this.` }
+      { role: 'interviewer', content: switchMsg }
     ]);
+    speakText(switchMsg);
     setSidebarOpen(false);
   };
 
@@ -178,6 +223,7 @@ export default function PracticePage() {
       const data = await response.json();
       if (data.success) {
         setMessages(prev => [...prev, { role: 'interviewer', content: data.message }]);
+        speakText(data.message);
       }
     } catch (error) {
       console.error(error);
@@ -235,13 +281,52 @@ export default function PracticePage() {
   };
 
   const handleVoiceInput = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please try using Google Chrome, Safari, or Microsoft Edge.");
+      return;
+    }
+
     if (isRecording) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
       setIsRecording(false);
     } else {
       setIsRecording(true);
       setSeconds(0);
-      setUserInput("I am implementing an optimal algorithm with two pointer markers to avoid quadratic calculations...");
-      setTimeout(() => setIsRecording(false), 2500);
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        console.log("Speech recognition started.");
+      };
+
+      recognition.onresult = (event: any) => {
+        const current = event.resultIndex;
+        const transcript = event.results[current][0].transcript;
+        if (transcript.trim()) {
+          setUserInput(prev => prev + (prev ? ' ' : '') + transcript);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        setIsRecording(false);
+      };
+
+      recognition.onend = () => {
+        setIsRecording(false);
+        console.log("Speech recognition ended.");
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
     }
   };
 
@@ -512,7 +597,22 @@ export default function PracticePage() {
           {/* Right Panel: dialogue Feed & coaching suggestions */}
           <aside className="col-span-1 lg:col-span-3 border-l border-hairline flex flex-col min-h-0 bg-zinc-950/20">
             <div className="p-4 border-b border-hairline flex-shrink-0">
-              <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-3">Live Interview Dialogue</span>
+              <div className="flex justify-between items-center mb-3">
+                <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block">Live Interview Dialogue</span>
+                <button
+                  onClick={() => {
+                    const nextMute = !isVoiceMuted;
+                    setIsVoiceMuted(nextMute);
+                    if (nextMute && 'speechSynthesis' in window) {
+                      window.speechSynthesis.cancel();
+                    }
+                  }}
+                  className="p-1 hover:bg-surface rounded text-zinc-450 hover:text-zinc-200 transition"
+                  title={isVoiceMuted ? "Unmute AI Voice" : "Mute AI Voice"}
+                >
+                  {isVoiceMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+                </button>
+              </div>
               
               {/* Chat timeline logs */}
               <div className="space-y-3 h-[200px] overflow-y-auto pr-1">
