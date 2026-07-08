@@ -122,6 +122,10 @@ io.on('connection', (socket: Socket) => {
     socket.to(data.roomId).emit('execution_sync', { results: data.results });
   });
 
+  socket.on('select_problem', (data: { roomId: string; problem: any }) => {
+    io.to(data.roomId).emit('problem_sync', { problem: data.problem });
+  });
+
   socket.on('peer_message', (data: { roomId: string; message: any }) => {
     socket.to(data.roomId).emit('peer_message', data.message);
   });

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Users, User, Code, PhoneOff, Video, Mic, MessageSquare, Send } from 'lucide-react';
+import { Users, User, Code, PhoneOff, Video, Mic, MessageSquare, Send, BookOpen, Search } from 'lucide-react';
 import Editor from '@monaco-editor/react';
+import type { Problem } from '../types';
 
 const SOCKET_URL = 'http://localhost:5000';
 
@@ -28,9 +29,34 @@ export default function P2PLobby() {
   const [isRunning, setIsRunning] = useState(false);
   const [runResults, setRunResults] = useState<any>(null);
 
+  const [problems, setProblems] = useState<Problem[]>([]);
+  const [activeProblem, setActiveProblem] = useState<Problem | null>(null);
+  const [lcSlug, setLcSlug] = useState('');
+  const [fetchingLc, setFetchingLc] = useState(false);
+  const [lcError, setLcError] = useState('');
+
+  const roleRef = useRef<'candidate' | 'interviewer' | null>(null);
+
   const [userRating] = useState<number>(() => {
     return Number(localStorage.getItem('vantage_rating')) || 1200;
   });
+
+  useEffect(() => {
+    roleRef.current = role;
+  }, [role]);
+
+  // Load standard problems database
+  useEffect(() => {
+    fetch(`${SOCKET_URL}/api/questions`)
+      .then(res => res.json())
+      .then((data: Problem[]) => {
+        setProblems(data);
+        if (data.length > 0) {
+          setActiveProblem(data[0]);
+        }
+      })
+      .catch(err => console.error("Error loading questions database:", err));
+  }, []);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -87,6 +113,16 @@ export default function P2PLobby() {
     s.on('execution_sync', (data: { results: any }) => {
       setRunResults(data.results);
       setConsoleOpen(true);
+    });
+
+    s.on('problem_sync', (data: { problem: Problem }) => {
+      setActiveProblem(data.problem);
+      setCode(roleRef.current === 'candidate'
+        ? data.problem.starterTemplate
+        : '// Candidate is drafting code...'
+      );
+      setRunResults(null);
+      setConsoleOpen(false);
     });
 
     s.on('peer_message', (data: { sender: string; text: string }) => {
@@ -148,8 +184,8 @@ export default function P2PLobby() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           code,
-          problemId: 'two-sum',
-          problemDescription: 'Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target.'
+          problemId: activeProblem?.id || 'two-sum',
+          problemDescription: activeProblem?.description || ''
         })
       });
 
@@ -170,6 +206,69 @@ export default function P2PLobby() {
       });
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const handleSelectProblem = (problemId: string) => {
+    const target = problems.find(p => p.id === problemId);
+    if (target && socket && matchedRoom) {
+      socket.emit('select_problem', {
+        roomId: matchedRoom,
+        problem: target
+      });
+      setActiveProblem(target);
+      setCode('// Candidate is drafting code...');
+      setRunResults(null);
+      setConsoleOpen(false);
+    }
+  };
+
+  const handleFetchLeetCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!lcSlug.trim() || fetchingLc || !socket || !matchedRoom) return;
+
+    setFetchingLc(true);
+    setLcError('');
+
+    try {
+      const response = await fetch(`${SOCKET_URL}/api/leetcode/fetch-problem`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: lcSlug.trim().toLowerCase() })
+      });
+
+      const data = await response.json();
+      if (data.success && data.problem) {
+        const customProblem: Problem = {
+          id: data.problem.id,
+          title: data.problem.title,
+          difficulty: data.problem.difficulty,
+          description: data.problem.description,
+          starterTemplate: data.problem.starterTemplate
+        };
+
+        setProblems(prev => {
+          if (prev.some(p => p.id === customProblem.id)) return prev;
+          return [...prev, customProblem];
+        });
+
+        socket.emit('select_problem', {
+          roomId: matchedRoom,
+          problem: customProblem
+        });
+
+        setActiveProblem(customProblem);
+        setCode('// Candidate is drafting code...');
+        setRunResults(null);
+        setConsoleOpen(false);
+        setLcSlug('');
+      } else {
+        setLcError(data.error || 'LeetCode slug not found.');
+      }
+    } catch (err) {
+      setLcError('Network lookup error.');
+    } finally {
+      setFetchingLc(false);
     }
   };
 
@@ -275,6 +374,9 @@ export default function P2PLobby() {
     setRunResults(null);
     setConsoleOpen(false);
     setIsRunning(false);
+    if (problems.length > 0) {
+      setActiveProblem(problems[0]);
+    }
   };
 
   return (
@@ -424,8 +526,66 @@ export default function P2PLobby() {
             <div className="bg-surface/20 border border-hairline rounded-2xl p-5 space-y-3 flex-1 overflow-y-auto">
               {role === 'interviewer' ? (
                 <>
-                  <h4 className="text-[10px] uppercase tracking-wider text-accent font-bold">Interviewer Guidelines</h4>
-                  <ul className="space-y-3.5 text-[11px] text-zinc-400 leading-relaxed">
+                  <h4 className="text-[10px] uppercase tracking-wider text-accent font-bold mb-2 flex items-center gap-1.5">
+                    <BookOpen className="size-3.5" /> Select Coding Task
+                  </h4>
+                  
+                  {/* Select Dropdown */}
+                  <div className="space-y-3 mb-4">
+                    <select
+                      value={activeProblem?.id || ''}
+                      onChange={(e) => handleSelectProblem(e.target.value)}
+                      className="w-full bg-zinc-950 border border-hairline focus:border-accent focus:outline-none rounded-xl px-3 py-2 text-xs transition text-foreground"
+                    >
+                      {problems.map(p => (
+                        <option key={p.id} value={p.id}>{p.title} ({p.difficulty})</option>
+                      ))}
+                    </select>
+
+                    {/* Custom LeetCode Fetcher */}
+                    <form onSubmit={handleFetchLeetCode} className="space-y-1.5">
+                      <label className="text-[8px] text-zinc-500 font-bold uppercase tracking-wider block">Fetch LeetCode Problem</label>
+                      <div className="flex gap-1.5">
+                        <div className="relative flex-1">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-550" />
+                          <input
+                            type="text"
+                            placeholder="e.g. fizz-buzz"
+                            className="w-full bg-zinc-950 border border-hairline focus:border-accent focus:outline-none rounded-xl pl-8 pr-2 py-1.5 text-xs transition text-foreground"
+                            value={lcSlug}
+                            onChange={(e) => setLcSlug(e.target.value)}
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={fetchingLc || !lcSlug.trim()}
+                          className="px-3 py-1.5 bg-accent disabled:opacity-50 text-accent-foreground text-xs font-bold rounded-xl transition hover:brightness-110"
+                        >
+                          {fetchingLc ? '...' : 'Load'}
+                        </button>
+                      </div>
+                      {lcError && <p className="text-[9px] text-rose-500 mt-1">{lcError}</p>}
+                    </form>
+                  </div>
+
+                  {activeProblem && (
+                    <div className="bg-zinc-900/40 p-3 rounded-xl border border-hairline space-y-2 mb-4 max-h-40 overflow-y-auto">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-bold text-zinc-200">{activeProblem.title}</span>
+                        <span className={`text-[8px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                          activeProblem.difficulty === 'Easy' ? 'bg-emerald-950/40 text-emerald-455 border border-emerald-900/30' :
+                          activeProblem.difficulty === 'Medium' ? 'bg-amber-950/40 text-amber-455 border border-amber-900/30' :
+                          'bg-rose-950/40 text-rose-455 border border-rose-900/30'
+                        }`}>
+                          {activeProblem.difficulty}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-zinc-450 leading-relaxed whitespace-pre-wrap">{activeProblem.description}</p>
+                    </div>
+                  )}
+
+                  <h4 className="text-[10px] uppercase tracking-wider text-accent font-bold mb-2">Interviewer Guidelines</h4>
+                  <ul className="space-y-2.5 text-[11px] text-zinc-400 leading-relaxed">
                     <li className="flex gap-2"><span className="size-1.5 rounded-full bg-accent mt-1 shrink-0" />Observe code design and suggest edge cases if they struggle.</li>
                     <li className="flex gap-2"><span className="size-1.5 rounded-full bg-accent mt-1 shrink-0" />Check memory optimizations (such as dynamic programming lookup buffers).</li>
                     <li className="flex gap-2"><span className="size-1.5 rounded-full bg-accent mt-1 shrink-0" />Observe speech pacing and clarity of answers.</li>
@@ -433,11 +593,29 @@ export default function P2PLobby() {
                 </>
               ) : (
                 <>
-                  <h4 className="text-[10px] uppercase tracking-wider text-accent font-bold">Coding Task Instructions</h4>
-                  <p className="text-[11px] text-zinc-400 leading-relaxed font-bold">Two Sum Challenge</p>
-                  <p className="text-[11px] text-zinc-450 leading-relaxed">
-                    Given an array of integers nums and an integer target, return indices of the two numbers such that they add up to target. Implement this inside the Monaco Editor. Your code is synchronized in real-time.
-                  </p>
+                  <h4 className="text-[10px] uppercase tracking-wider text-accent font-bold mb-2">Coding Task Instructions</h4>
+                  {activeProblem ? (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <p className="text-[11px] text-zinc-200 font-bold leading-relaxed">{activeProblem.title}</p>
+                        <span className={`text-[8px] uppercase font-bold px-1.5 py-0.5 rounded ${
+                          activeProblem.difficulty === 'Easy' ? 'bg-emerald-950/40 text-emerald-455 border border-emerald-900/30' :
+                          activeProblem.difficulty === 'Medium' ? 'bg-amber-950/40 text-amber-455 border border-amber-900/30' :
+                          'bg-rose-950/40 text-rose-455 border border-rose-900/30'
+                        }`}>
+                          {activeProblem.difficulty}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-zinc-450 leading-relaxed whitespace-pre-wrap">
+                        {activeProblem.description}
+                      </p>
+                      <span className="text-[8px] text-zinc-500 font-mono italic block pt-1 border-t border-hairline/35">
+                        Your code editor is synchronized in real-time.
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-zinc-500">Waiting for interviewer to present a coding task...</p>
+                  )}
                 </>
               )}
             </div>
